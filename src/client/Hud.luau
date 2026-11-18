@@ -1,254 +1,202 @@
--- Brainrot Buffet: the HUD.
--- A ScreenGui over the 3D world. Top-center is the money bar (kept clear
--- of the top-left corner where Roblox's own menu buttons sit), top-right
--- holds the action buttons, the wave banner appears centre-top, and
--- notifications stack at the bottom. init(remotes) builds it; update(state)
--- refreshes it from the server's StateUpdate.
+-- Brainrot Buffet: HUD.
+-- Money, rebirths + multiplier, rebirth progress bar, wave timer, lock button,
+-- and notification toasts.
 
-local Config = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Config"))
-local Util = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Util"))
-local Sound = require(script.Parent:WaitForChild("Sound"))
+local Util = require(game:GetService("ReplicatedStorage").Shared.Util)
 
 local Hud = {}
 
+Hud.OnLockPressed = nil -- set by Game.client.luau
+
 local gui = nil
 local moneyLabel = nil
-local incomeLabel = nil
 local rebirthLabel = nil
-local rebirthBar = nil
+local progressFill = nil
+local progressLabel = nil
+local waveLabel = nil
 local lockButton = nil
-local rebirthButton = nil
-local muteButton = nil
-local waveBanner = nil
-local waveText = nil
-local notifyFrame = nil
-local remotes = nil
+local toastHolder = nil
 
-local function makeButton(name, text, parent, pos)
-	local b = Instance.new("TextButton")
-	b.Name = name
-	b.Text = text
-	b.Position = pos
-	b.Size = UDim2.fromOffset(150, 40)
-	b.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-	b.BorderColor3 = Color3.fromRGB(255, 200, 60)
-	b.BorderSizePixel = 2
-	b.TextColor3 = Color3.fromRGB(255, 255, 255)
-	b.TextSize = 18
-	b.Font = Enum.Font.SourceSansBold
-	b.Parent = parent
-	return b
+local function makeLabel(parent, name, pos, size, text, textSize, color)
+	local label = Instance.new("TextLabel")
+	label.Name = name
+	label.Position = pos
+	label.Size = size
+	label.BackgroundTransparency = 1
+	label.Text = text
+	label.TextSize = textSize
+	label.TextColor3 = color or Color3.fromRGB(255, 255, 255)
+	label.TextStrokeTransparency = 0
+	label.Font = Enum.Font.SourceSansBold
+	label.Parent = parent
+	return label
 end
 
-local function makeLabel(name, parent, pos, size, textSize)
-	local l = Instance.new("TextLabel")
-	l.Name = name
-	l.Position = pos
-	l.Size = size
-	l.BackgroundTransparency = 1
-	l.TextColor3 = Color3.fromRGB(255, 255, 255)
-	l.TextSize = textSize
-	l.Font = Enum.Font.SourceSansBold
-	l.TextXAlignment = Enum.TextXAlignment.Left
-	l.Parent = parent
-	return l
-end
-
-function Hud.init(remotesRef)
-	remotes = remotesRef
-	local player = game:GetService("Players").LocalPlayer
+function Hud.Build(player)
 	local playerGui = player:WaitForChild("PlayerGui")
 
 	gui = Instance.new("ScreenGui")
-	gui.Name = "BuffetGui"
+	gui.Name = "BuffetHud"
 	gui.ResetOnSpawn = false
 	gui.IgnoreGuiInset = true
 	gui.Parent = playerGui
 
-	-- Money bar, top-center.
-	local bar = Instance.new("Frame")
-	bar.Name = "MoneyBar"
-	bar.AnchorPoint = Vector2.new(0.5, 0)
-	bar.Position = UDim2.new(0.5, 0, 0, 12)
-	bar.Size = UDim2.fromOffset(420, 86)
-	bar.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
-	bar.BorderColor3 = Color3.fromRGB(255, 200, 60)
-	bar.BorderSizePixel = 2
-	bar.Parent = gui
+	-- Top bar.
+	local topBar = Instance.new("Frame")
+	topBar.Name = "TopBar"
+	topBar.AnchorPoint = Vector2.new(0.5, 0)
+	topBar.Position = UDim2.new(0.5, 0, 0, 10)
+	topBar.Size = UDim2.new(0, 520, 0, 110)
+	topBar.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+	topBar.BackgroundTransparency = 0.25
+	topBar.BorderSizePixel = 0
+	topBar.Parent = gui
 
-	moneyLabel = makeLabel("Money", bar, UDim2.fromOffset(14, 6), UDim2.new(1, -28, 0, 34), 30)
-	moneyLabel.Text = "$100"
-	incomeLabel = makeLabel("Income", bar, UDim2.fromOffset(14, 42), UDim2.new(0.55, 0, 0, 20), 18)
-	incomeLabel.Text = "$0/s"
-	incomeLabel.TextColor3 = Color3.fromRGB(140, 255, 140)
-	rebirthLabel = makeLabel("Rebirths", bar, UDim2.new(0.55, 0, 0, 42), UDim2.new(0.45, -14, 0, 20), 18)
-	rebirthLabel.Text = "x1"
-	rebirthLabel.TextXAlignment = Enum.TextXAlignment.Right
-	rebirthLabel.TextColor3 = Color3.fromRGB(255, 200, 60)
+	local title = makeLabel(topBar, "Title", UDim2.new(0, 10, 0, 4), UDim2.new(1, -20, 0, 28), "BRAINROT BUFFET", 24, Color3.fromRGB(255, 220, 90))
+	title.TextXAlignment = Enum.TextXAlignment.Left
 
-	-- Rebirth progress bar, under the money bar.
-	local progBg = Instance.new("Frame")
-	progBg.Name = "RebirthProgressBg"
-	progBg.AnchorPoint = Vector2.new(0.5, 0)
-	progBg.Position = UDim2.new(0.5, 0, 0, 104)
-	progBg.Size = UDim2.fromOffset(420, 10)
-	progBg.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-	progBg.BorderSizePixel = 0
-	progBg.Parent = gui
-	rebirthBar = Instance.new("Frame")
-	rebirthBar.Name = "RebirthProgress"
-	rebirthBar.Size = UDim2.fromScale(0, 1)
-	rebirthBar.BackgroundColor3 = Color3.fromRGB(255, 200, 60)
-	rebirthBar.BorderSizePixel = 0
-	rebirthBar.Parent = progBg
+	moneyLabel = makeLabel(topBar, "Money", UDim2.new(0, 10, 0, 32), UDim2.new(1, -20, 0, 30), "$100", 26, Color3.fromRGB(120, 255, 120))
+	moneyLabel.TextXAlignment = Enum.TextXAlignment.Left
 
-	-- Action buttons, top-right.
-	lockButton = makeButton("LockBase", "Lock Base (60s)", gui, UDim2.new(1, -164, 0, 12))
-	rebirthButton = makeButton("Rebirth", "Rebirth", gui, UDim2.new(1, -164, 0, 60))
-	muteButton = makeButton("Mute", "Sound: On", gui, UDim2.new(1, -164, 0, 108))
-	muteButton.Size = UDim2.fromOffset(150, 32)
+	rebirthLabel = makeLabel(topBar, "Rebirths", UDim2.new(0, 10, 0, 62), UDim2.new(0.6, -10, 0, 20), "Rebirths: 0  (x1)", 16)
+	rebirthLabel.TextXAlignment = Enum.TextXAlignment.Left
 
-	-- Wave banner, centre-top, hidden until the wave.
-	waveBanner = Instance.new("Frame")
-	waveBanner.Name = "WaveBanner"
-	waveBanner.AnchorPoint = Vector2.new(0.5, 0)
-	waveBanner.Position = UDim2.new(0.5, 0, 0, 130)
-	waveBanner.Size = UDim2.fromOffset(480, 52)
-	waveBanner.BackgroundColor3 = Color3.fromRGB(120, 30, 20)
-	waveBanner.BorderColor3 = Color3.fromRGB(255, 90, 40)
-	waveBanner.BorderSizePixel = 2
-	waveBanner.Visible = false
-	waveBanner.Parent = gui
-	waveText = makeLabel("WaveText", waveBanner, UDim2.fromOffset(10, 6), UDim2.new(1, -20, 1, -12), 20)
-	waveText.Text = ""
-	waveText.TextXAlignment = Enum.TextXAlignment.Center
+	waveLabel = makeLabel(topBar, "Wave", UDim2.new(0.6, 0, 0, 62), UDim2.new(0.4, -10, 0, 20), "Wave in 180s", 16, Color3.fromRGB(255, 150, 150))
+	waveLabel.TextXAlignment = Enum.TextXAlignment.Right
 
-	-- Hint, bottom-centre.
-	local hint = makeLabel("Hint", gui, UDim2.new(0.5, -300, 1, -96), UDim2.fromOffset(600, 24), 18)
-	hint.Text = "Click a character on the conveyor to buy it. Click a rival's character to steal it!"
-	hint.TextColor3 = Color3.fromRGB(220, 220, 220)
-	hint.TextXAlignment = Enum.TextXAlignment.Center
+	-- Rebirth progress bar.
+	local barBack = Instance.new("Frame")
+	barBack.Name = "ProgressBack"
+	barBack.Position = UDim2.new(0, 10, 0, 86)
+	barBack.Size = UDim2.new(1, -20, 0, 14)
+	barBack.BackgroundColor3 = Color3.fromRGB(60, 60, 75)
+	barBack.BorderSizePixel = 0
+	barBack.Parent = topBar
 
-	-- Notifications, bottom-left, stacked.
-	notifyFrame = Instance.new("Frame")
-	notifyFrame.Name = "Notifications"
-	notifyFrame.AnchorPoint = Vector2.new(0, 1)
-	notifyFrame.Position = UDim2.new(0, 12, 1, -12)
-	notifyFrame.Size = UDim2.fromOffset(420, 120)
-	notifyFrame.BackgroundTransparency = 1
-	notifyFrame.Parent = gui
+	progressFill = Instance.new("Frame")
+	progressFill.Name = "ProgressFill"
+	progressFill.Size = UDim2.fromScale(0, 1)
+	progressFill.BackgroundColor3 = Color3.fromRGB(255, 180, 40)
+	progressFill.BorderSizePixel = 0
+	progressFill.Parent = barBack
 
-	-- Title, bottom-right.
-	local title = makeLabel("Title", gui, UDim2.new(1, -260, 1, -36), UDim2.fromOffset(250, 24), 18)
-	title.Text = Config.GAME_NAME .. " - " .. Config.WORLD_NAME
-	title.TextColor3 = Color3.fromRGB(255, 200, 60)
-	title.TextXAlignment = Enum.TextXAlignment.Right
+	progressLabel = makeLabel(topBar, "Progress", UDim2.new(0, 10, 0, 86), UDim2.new(1, -20, 0, 14), "", 12)
+	progressLabel.TextXAlignment = Enum.TextXAlignment.Center
 
-	-- Wire the buttons.
+	-- Lock base button (bottom right).
+	lockButton = Instance.new("TextButton")
+	lockButton.Name = "LockButton"
+	lockButton.AnchorPoint = Vector2.new(1, 1)
+	lockButton.Position = UDim2.new(1, -16, 1, -16)
+	lockButton.Size = UDim2.fromOffset(170, 48)
+	lockButton.BackgroundColor3 = Color3.fromRGB(70, 120, 255)
+	lockButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	lockButton.TextSize = 18
+	lockButton.Font = Enum.Font.SourceSansBold
+	lockButton.Text = "LOCK BASE (60s)"
+	lockButton.Parent = gui
 	lockButton.MouseButton1Click:Connect(function()
-		Sound.play("click")
-		if remotes and remotes.LockBase then
-			remotes.LockBase:FireServer()
+		if Hud.OnLockPressed then
+			Hud.OnLockPressed()
 		end
 	end)
-	rebirthButton.MouseButton1Click:Connect(function()
-		Sound.play("click")
-		if remotes and remotes.Rebirth then
-			remotes.Rebirth:FireServer()
-		end
-	end)
-	muteButton.MouseButton1Click:Connect(function()
-		local m = Sound.toggleMute()
-		muteButton.Text = m and "Sound: Off" or "Sound: On"
-	end)
+
+	-- Hint label (bottom left).
+	local hint = makeLabel(gui, "Hint", UDim2.new(0, 16, 1, -40), UDim2.new(0, 420, 0, 24), "Click a character on the conveyor to buy it!", 16, Color3.fromRGB(230, 230, 230))
+	hint.TextXAlignment = Enum.TextXAlignment.Left
+
+	-- Toast holder (top center, below the top bar).
+	toastHolder = Instance.new("Frame")
+	toastHolder.Name = "Toasts"
+	toastHolder.AnchorPoint = Vector2.new(0.5, 0)
+	toastHolder.Position = UDim2.new(0.5, 0, 0, 130)
+	toastHolder.Size = UDim2.new(0, 480, 0, 200)
+	toastHolder.BackgroundTransparency = 1
+	toastHolder.Parent = gui
 end
 
--- Refresh the HUD from a StateUpdate payload.
-function Hud.update(state)
-	if not moneyLabel then
+function Hud.Update(snapshot)
+	if not gui then
 		return
 	end
-	moneyLabel.Text = Util.formatMoney(state.money)
-	incomeLabel.Text = Util.formatMoney(state.income) .. "/s"
-	rebirthLabel.Text = "Rebirths: " .. tostring(state.rebirths) .. " (x" .. tostring(state.multiplier) .. ")"
-	if state.nextRebirth then
-		local frac = math.clamp(state.totalEarned / state.nextRebirth, 0, 1)
-		rebirthBar.Size = UDim2.fromScale(frac, 1)
-		if state.canRebirth then
-			rebirthButton.Text = "Rebirth! (READY)"
-			rebirthButton.BackgroundColor3 = Color3.fromRGB(60, 140, 60)
+	moneyLabel.Text = Util.FormatMoney(snapshot.Money)
+	rebirthLabel.Text = "Rebirths: " .. snapshot.Rebirths .. "  (x" .. snapshot.Multiplier .. ")"
+
+	if snapshot.NextRebirth then
+		local frac = Util.Clamp(snapshot.TotalEarned / snapshot.NextRebirth, 0, 1)
+		progressFill.Size = UDim2.fromScale(frac, 1)
+		progressLabel.Text = Util.FormatShort(snapshot.TotalEarned) .. " / " .. Util.FormatShort(snapshot.NextRebirth) .. " to next rebirth"
+	else
+		progressFill.Size = UDim2.fromScale(1, 1)
+		progressLabel.Text = "MAX REBIRTHS!"
+	end
+
+	if snapshot.WaveIn then
+		local secs = math.ceil(snapshot.WaveIn)
+		if secs <= 30 then
+			waveLabel.Text = "WAVE IN " .. secs .. "s!"
+			waveLabel.TextColor3 = Color3.fromRGB(255, 60, 60)
 		else
-			rebirthButton.Text = "Rebirth (" .. Util.formatMoney(state.totalEarned) .. " / " .. Util.formatMoney(state.nextRebirth) .. ")"
-			rebirthButton.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+			waveLabel.Text = "Wave in " .. secs .. "s"
+			waveLabel.TextColor3 = Color3.fromRGB(255, 150, 150)
 		end
-	else
-		rebirthBar.Size = UDim2.fromScale(1, 1)
-		rebirthButton.Text = "Rebirth (MAX)"
 	end
-	if state.lockRemaining and state.lockRemaining > 0 then
-		lockButton.Text = "Locked (" .. tostring(math.ceil(state.lockRemaining)) .. "s)"
-		lockButton.BackgroundColor3 = Color3.fromRGB(60, 140, 60)
-	elseif state.lockCooldown and state.lockCooldown > 0 then
-		lockButton.Text = "Lock (" .. tostring(math.ceil(state.lockCooldown)) .. "s)"
-		lockButton.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+
+	if snapshot.LockActiveIn and snapshot.LockActiveIn > 0 then
+		lockButton.Text = "LOCKED (" .. math.ceil(snapshot.LockActiveIn) .. "s)"
+		lockButton.BackgroundColor3 = Color3.fromRGB(40, 160, 80)
+	elseif snapshot.LockReadyIn and snapshot.LockReadyIn > 0 then
+		lockButton.Text = "LOCK (" .. math.ceil(snapshot.LockReadyIn) .. "s)"
+		lockButton.BackgroundColor3 = Color3.fromRGB(120, 120, 130)
 	else
-		lockButton.Text = "Lock Base (60s)"
-		lockButton.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+		lockButton.Text = "LOCK BASE (60s)"
+		lockButton.BackgroundColor3 = Color3.fromRGB(70, 120, 255)
 	end
 end
 
--- Show a notification line for a few seconds.
-function Hud.notify(msg)
-	if not notifyFrame then
+function Hud.Toast(message, kind)
+	if not toastHolder then
 		return
 	end
-	local label = Instance.new("TextLabel")
-	label.Size = UDim2.new(1, 0, 0, 22)
-	label.BackgroundTransparency = 1
-	label.Text = msg
-	label.TextColor3 = Color3.fromRGB(255, 255, 255)
-	label.TextSize = 16
-	label.Font = Enum.Font.SourceSans
-	label.TextXAlignment = Enum.TextXAlignment.Left
-	label.Parent = notifyFrame
-	-- Stack newest at the bottom: shift older ones up.
-	local children = notifyFrame:GetChildren()
-	for i, child in ipairs(children) do
+	local colors = {
+		info = Color3.fromRGB(50, 50, 65),
+		success = Color3.fromRGB(40, 140, 70),
+		error = Color3.fromRGB(160, 50, 50),
+		warning = Color3.fromRGB(180, 120, 20),
+	}
+	local toast = Instance.new("TextLabel")
+	toast.Size = UDim2.new(1, 0, 0, 36)
+	toast.BackgroundColor3 = colors[kind] or colors.info
+	toast.BackgroundTransparency = 0.15
+	toast.TextColor3 = Color3.fromRGB(255, 255, 255)
+	toast.TextSize = 16
+	toast.Font = Enum.Font.SourceSansBold
+	toast.Text = message
+	toast.TextWrapped = true
+	toast.Parent = toastHolder
+
+	-- Stack toasts from the top.
+	local count = 0
+	for _, child in ipairs(toastHolder:GetChildren()) do
 		if child:IsA("TextLabel") then
-			child.Position = UDim2.new(0, 0, 1, -22 * (#children - i + 1))
+			count += 1
+			child.Position = UDim2.new(0, 0, 0, (count - 1) * 40)
 		end
 	end
-	task.delay(6, function()
-		label:Destroy()
-	end)
-end
 
--- Wave events from the server: "warning", "start", "end".
-function Hud.wave(event, data)
-	if not waveBanner then
-		return
-	end
-	if event == "warning" then
-		waveBanner.Visible = true
-		waveText.Text = "HUNGER WAVE INCOMING! Get to your base!"
-		Sound.play("wave")
-		task.spawn(function()
-			local left = data or 30
-			while left > 0 and waveBanner.Visible do
-				waveText.Text = "HUNGER WAVE INCOMING! Get to your base! (" .. tostring(left) .. "s)"
-				task.wait(1)
-				left -= 1
+	task.delay(4, function()
+		if toast.Parent then
+			toast:Destroy()
+		end
+		-- Re-stack what is left.
+		local i = 0
+		for _, child in ipairs(toastHolder:GetChildren()) do
+			if child:IsA("TextLabel") then
+				i += 1
+				child.Position = UDim2.new(0, 0, 0, (i - 1) * 40)
 			end
-		end)
-	elseif event == "start" then
-		waveBanner.Visible = true
-		waveText.Text = "THE HUNGER WAVE IS HERE! RUN HOME!"
-	elseif event == "end" then
-		waveText.Text = "The wave has passed. The buffet is safe... for now."
-		task.delay(4, function()
-			waveBanner.Visible = false
-		end)
-	end
+		end
+	end)
 end
 
 return Hud

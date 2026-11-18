@@ -1,131 +1,122 @@
 -- Brainrot Buffet: the Hunger Wave.
--- Every WAVE_INTERVAL seconds the wave comes. It warns for WAVE_WARNING
--- seconds so players can dash home, then a wall of hunger sweeps the map.
--- Anyone caught outside their base is swept home and loses a share of
--- their money; characters left on the conveyor are swept away. The base
--- is always safe.
+-- Every 180s a wave rolls in: 30s warning, then a 10s sweep. Any player caught
+-- outside their base is teleported home and loses 10% of their money, and the
+-- conveyor is cleared.
 
-local Config = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Config"))
-local Characters = require(script.Parent:WaitForChild("Characters"))
-local State = require(script.Parent:WaitForChild("State"))
+local Config = require(game:GetService("ReplicatedStorage").Shared.Config)
+local Players = game:GetService("Players")
+local Spawner = require(script.Parent.Spawner)
+local State = require(script.Parent.State)
+local Util = require(game:GetService("ReplicatedStorage").Shared.Util)
+local World = require(script.Parent.World)
 
 local Wave = {}
 
-local world = nil
-local remotes = nil
-local timer = 0
-local phase = "idle" -- idle, warning, sweeping
-local phaseTimer = 0
-local warned = false
+Wave.NotifyAll = nil -- set by init: function(message, kind)
+Wave.NotifyPlayer = nil -- set by init: function(player, message, kind)
+Wave.NextWaveAt = 0
+Wave.WarningSent = false
+Wave.Sweeping = false
+Wave.SweepEndsAt = 0
+Wave.Started = false
 
-function Wave.init(worldRef, remotesRef)
-	world = worldRef
-	remotes = remotesRef
+function Wave.Start(now)
+	Wave.NextWaveAt = now + Config.Wave.Cycle
+	Wave.WarningSent = false
+	Wave.Sweeping = false
+	Wave.Started = true
 end
 
-local function broadcast(event, data)
-	if remotes and remotes.WaveEvent then
-		remotes.WaveEvent:FireAllClients(event, data)
+function Wave.TimeUntilNext(now)
+	if not Wave.Started then
+		return Config.Wave.Cycle
+	end
+	return math.max(0, Wave.NextWaveAt - now)
+end
+
+local function notifyAll(message, kind)
+	if Wave.NotifyAll then
+		Wave.NotifyAll(message, kind)
 	end
 end
 
-local function notify(player, msg)
-	if remotes and remotes.Notify then
-		remotes.Notify:FireClient(player, msg)
-	end
-end
-
--- Is this player's character inside their own base?
-local function isHome(player)
-	local base = State.getBase(player)
-	local char = player.Character
-	if not base or not char then
+local function isOutsideBase(player, state)
+	local character = player.Character
+	if not character then
 		return false
 	end
-	local root = char:FindFirstChild("HumanoidRootPart")
+	local root = character:FindFirstChild("HumanoidRootPart")
 	if not root then
 		return false
 	end
-	local d = (root.Position - base.center)
-	d = Vector3.new(d.X, 0, d.Z)
-	return d.Magnitude <= 18
+	local base = World.Bases[state.BaseIndex]
+	if not base then
+		return true
+	end
+	local dist = Util.FlatDistance(root.Position, base.Center)
+	return dist > (Config.Bases.Size / 2)
 end
 
--- Sweep one player home: teleport to their base and take the penalty.
-local function sweepPlayer(player)
-	local base = State.getBase(player)
-	local char = player.Character
-	local s = State.get(player)
-	local lost = math.floor(s.money * Config.WAVE_PENALTY)
-	if lost > 0 then
-		s.money -= lost
+local function runSweep()
+	-- Show the wave wall, clear the conveyor.
+	if World.WaveWall then
+		World.WaveWall.Transparency = 0.3
 	end
-	if char then
-		local root = char:FindFirstChild("HumanoidRootPart")
-		if root and base then
-			root.CFrame = CFrame.new(base.spawnPos)
+	Spawner.ClearAll()
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		local state = State.Get(player)
+		if state and state.BaseIndex > 0 then
+			if isOutsideBase(player, state) then
+				local loss = math.floor(state.Money * Config.Wave.LossPercent)
+				state.Money -= loss
+				local base = World.Bases[state.BaseIndex]
+				local character = player.Character
+				if character then
+					local root = character:FindFirstChild("HumanoidRootPart")
+					if root then
+						root.CFrame = CFrame.new(base.SpawnPos)
+					end
+				end
+				if Wave.NotifyPlayer then
+					Wave.NotifyPlayer(player, "Hunger Wave caught you! You lost " .. Util.FormatMoney(loss) .. ".", "warning")
+				end
+			end
 		end
 	end
-	if lost > 0 then
-		notify(player, "The Hunger Wave swept you home! You lost $" .. tostring(lost) .. ".")
-	else
-		notify(player, "The Hunger Wave swept you home!")
-	end
+
+	notifyAll("The Hunger Wave swept the picnic! Get back to your base next time.", "warning")
 end
 
--- One tick of the wave clock, called every frame with dt.
-function Wave.step(dt)
-	if phase == "idle" then
-		timer += dt
-		if timer >= Config.WAVE_INTERVAL - Config.WAVE_WARNING and not warned then
-			warned = true
-			phase = "warning"
-			phaseTimer = 0
-			broadcast("warning", Config.WAVE_WARNING)
+-- Called every Heartbeat with the current clock time.
+function Wave.Step(now)
+	if not Wave.Started then
+		return
+	end
+
+	if Wave.Sweeping then
+		if now >= Wave.SweepEndsAt then
+			Wave.Sweeping = false
+			if World.WaveWall then
+				World.WaveWall.Transparency = 1
+			end
+			Wave.NextWaveAt = now + Config.Wave.Cycle
+			Wave.WarningSent = false
+			notifyAll("The wave has passed. The conveyor is running again!", "info")
 		end
-	elseif phase == "warning" then
-		phaseTimer += dt
-		if phaseTimer >= Config.WAVE_WARNING then
-			phase = "sweeping"
-			phaseTimer = 0
-			broadcast("start", Config.WAVE_SWEEP)
-			-- The wall appears at the west edge, visible.
-			if world and world.waveWall then
-				world.waveWall.Transparency = 0.4
-				world.waveWall.Position = Vector3.new(-200, 20, 0)
-			end
-		end
-	elseif phase == "sweeping" then
-		phaseTimer += dt
-		local t = math.clamp(phaseTimer / Config.WAVE_SWEEP, 0, 1)
-		if world and world.waveWall then
-			world.waveWall.Position = Vector3.new(-200 + 400 * t, 20, 0)
-		end
-		if phaseTimer >= Config.WAVE_SWEEP then
-			-- The wave has crossed: sweep everyone caught outside, clear the belt.
-			for _, player in ipairs(game:GetService("Players"):GetPlayers()) do
-				if not isHome(player) then
-					sweepPlayer(player)
-				end
-			end
-			local swept = {}
-			for uid, rec in pairs(Characters.all()) do
-				if rec.onConveyor then
-					table.insert(swept, uid)
-				end
-			end
-			for _, uid in ipairs(swept) do
-				Characters.remove(uid)
-			end
-			if world and world.waveWall then
-				world.waveWall.Transparency = 1
-				world.waveWall.Position = Vector3.new(-400, 20, 0)
-			end
-			broadcast("end", 0)
-			phase = "idle"
-			timer = 0
-			warned = false
-		end
+		return
+	end
+
+	local remaining = Wave.NextWaveAt - now
+	if remaining <= Config.Wave.Warning and not Wave.WarningSent then
+		Wave.WarningSent = true
+		notifyAll("HUNGER WAVE in " .. Config.Wave.Warning .. "s! Get back to your base!", "warning")
+	end
+
+	if remaining <= 0 then
+		Wave.Sweeping = true
+		Wave.SweepEndsAt = now + Config.Wave.Sweep
+		runSweep()
 	end
 end
 

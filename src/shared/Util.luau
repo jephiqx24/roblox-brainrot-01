@@ -1,41 +1,65 @@
--- Brainrot Buffet: small shared helpers. No side effects.
+-- Brainrot Buffet: small shared helpers.
 
 local Util = {}
 
--- Format money: $1,234, $12.3K, $4.5M, $2.1B.
-function Util.formatMoney(n)
-	n = math.floor(n + 0.5)
-	if n < 1000 then
-		return "$" .. tostring(n)
+-- Formats a money amount as "$1,234,567". Rounds down to whole dollars.
+function Util.FormatMoney(amount)
+	local n = math.floor(amount + 0.0001)
+	local negative = n < 0
+	if negative then
+		n = -n
 	end
-	local suffixes = { { 1e9, "B" }, { 1e6, "M" }, { 1e3, "K" } }
-	for _, s in ipairs(suffixes) do
-		local div, suffix = s[1], s[2]
-		if n >= div then
-			local v = n / div
-			if v >= 100 then
-				return "$" .. tostring(math.floor(v + 0.5)) .. suffix
-			else
-				return "$" .. string.format("%.1f", v) .. suffix
-			end
-		end
+	local s = tostring(n)
+	local out = ""
+	while #s > 3 do
+		out = "," .. string.sub(s, -3) .. out
+		s = string.sub(s, 1, #s - 3)
 	end
-	return "$" .. tostring(n)
+	out = s .. out
+	if negative then
+		out = "-" .. out
+	end
+	return "$" .. out
 end
 
--- Format a duration in seconds as M:SS.
-function Util.formatTime(sec)
-	sec = math.max(0, math.floor(sec + 0.5))
-	local m = math.floor(sec / 60)
-	local s = sec % 60
-	return string.format("%d:%02d", m, s)
+-- Short form for big numbers: "$25K", "$2.5M", "$1.5B".
+function Util.FormatShort(amount)
+	local n = amount
+	if n >= 1e9 then
+		return string.format("$%.1fB", n / 1e9)
+	elseif n >= 1e6 then
+		return string.format("$%.1fM", n / 1e6)
+	elseif n >= 1e3 then
+		return string.format("$%.1fK", n / 1e3)
+	else
+		return Util.FormatMoney(n)
+	end
 end
 
--- A short unique id for spawned characters.
-local uidCounter = 0
-function Util.nextUid()
-	uidCounter += 1
-	return "c" .. tostring(os.time()) .. "-" .. tostring(uidCounter) .. "-" .. tostring(math.random(1000, 9999))
+function Util.Clamp(value, low, high)
+	if value < low then
+		return low
+	elseif value > high then
+		return high
+	else
+		return value
+	end
+end
+
+function Util.Round(value)
+	return math.floor(value + 0.5)
+end
+
+-- Income multiplier from a rebirth count: rebirth 1 = x2, rebirth 2 = x4, ...
+function Util.RebirthMultiplier(rebirths)
+	return 2 ^ rebirths
+end
+
+-- Distance on the XZ plane between two Vector3s.
+function Util.FlatDistance(a, b)
+	local dx = a.X - b.X
+	local dz = a.Z - b.Z
+	return math.sqrt(dx * dx + dz * dz)
 end
 
 return Util

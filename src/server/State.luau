@@ -1,174 +1,131 @@
--- Brainrot Buffet: player state, kept in one place.
--- Every player's money, earnings, owned characters, rebirths and lock live
--- here. Other server modules read and change state only through this module.
+-- Brainrot Buffet: per-player state.
+-- Money, lifetime earnings, rebirths, owned characters, base assignment, cooldowns.
 
-local Config = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Config"))
+local Config = require(game:GetService("ReplicatedStorage").Shared.Config)
+local Util = require(game:GetService("ReplicatedStorage").Shared.Util)
 
 local State = {}
 
--- player -> state table
-local states = {}
--- player -> base info (assigned at join)
-local playerBase = {}
+State.Players = {} -- [Player] = state table
 
--- A fresh state for a joining player.
-local function freshState()
-	return {
-		money = Config.START_MONEY,
-		totalEarned = 0,
-		rebirths = 0,
-		-- uid -> { charId, mutation, rate, slot }
-		owned = {},
-		lockedUntil = 0,
-		lockReadyAt = 0,
-		lastStealAt = 0,
+function State.New(player)
+	local state = {
+		Player = player,
+		Money = Config.StartingMoney,
+		TotalEarned = 0,
+		Rebirths = 0,
+		Owned = {}, -- list of owned character entries { Id, Def, Mutation, Rate, Model, Slot }
+		BaseIndex = 0,
+		StealCooldownUntil = 0,
+		LockUntil = 0,
+		LockCooldownUntil = 0,
 	}
+	State.Players[player] = state
+	return state
 end
 
-function State.get(player)
-	local s = states[player]
-	if not s then
-		s = freshState()
-		states[player] = s
-	end
-	return s
+function State.Get(player)
+	return State.Players[player]
 end
 
-function State.remove(player)
-	states[player] = nil
-	playerBase[player] = nil
+function State.Remove(player)
+	State.Players[player] = nil
 end
 
-function State.setBase(player, base)
-	playerBase[player] = base
+function State.IncomeMultiplier(state)
+	return Util.RebirthMultiplier(state.Rebirths)
 end
 
-function State.getBase(player)
-	return playerBase[player]
-end
-
--- The player's permanent earnings multiplier from rebirths.
-function State.multiplier(player)
-	local s = State.get(player)
-	return (Config.REBIRTH_MULTIPLIER) ^ s.rebirths
-end
-
--- Money per second from everything the player owns.
-function State.incomePerSecond(player)
-	local s = State.get(player)
+-- Adds income for dt seconds from all owned characters. Returns the amount added.
+function State.AddIncome(state, dt)
 	local total = 0
-	for _, owned in pairs(s.owned) do
-		total += owned.rate
+	for _, owned in ipairs(state.Owned) do
+		total += owned.Rate * dt
+	end
+	total *= State.IncomeMultiplier(state)
+	if total > 0 then
+		state.Money += total
+		state.TotalEarned += total
 	end
 	return total
 end
 
--- Add money (earnings). totalEarned tracks rebirth progress.
-function State.earn(player, amount)
-	local s = State.get(player)
-	s.money += amount
-	s.totalEarned += amount
+-- Next rebirth threshold, or nil when maxed out.
+function State.NextRebirthThreshold(state)
+	return Config.RebirthThresholds[state.Rebirths + 1]
 end
 
-function State.spend(player, amount)
-	local s = State.get(player)
-	if s.money < amount then
-		return false
+-- Auto-rebirth: when lifetime earnings cross the next threshold, rebirth once
+-- per threshold crossed and announce it. Returns true if a rebirth happened.
+function State.CheckRebirth(state)
+	local nextThreshold = State.NextRebirthThreshold(state)
+	if nextThreshold and state.TotalEarned >= nextThreshold then
+		state.Rebirths += 1
+		return true
 	end
-	s.money -= amount
-	return true
+	return false
 end
 
--- Register a character the player owns. slot is the base slot number.
-function State.addOwned(player, uid, charId, mutation, rate, slot)
-	local s = State.get(player)
-	s.owned[uid] = { charId = charId, mutation = mutation, rate = rate, slot = slot }
+function State.CanAfford(state, cost)
+	return state.Money >= cost
 end
 
-function State.removeOwned(player, uid)
-	local s = State.get(player)
-	local owned = s.owned[uid]
-	s.owned[uid] = nil
-	return owned
+function State.Spend(state, cost)
+	state.Money -= cost
 end
 
-function State.ownedCount(player)
-	local s = State.get(player)
-	local n = 0
-	for _ in pairs(s.owned) do
-		n += 1
+-- Finds a free slot index (1-6) on the player's base, or nil if full.
+function State.FreeSlot(state)
+	local used = {}
+	for _, owned in ipairs(state.Owned) do
+		if owned.Slot then
+			used[owned.Slot] = true
+		end
 	end
-	return n
-end
-
--- Rebirth: what it costs (total earned) for the player's next rebirth, or nil
--- when the player is at the last one.
-function State.nextRebirthCost(player)
-	local s = State.get(player)
-	return Config.REBIRTH_COSTS[s.rebirths + 1]
-end
-
-function State.canRebirth(player)
-	local cost = State.nextRebirthCost(player)
-	if cost == nil then
-		return false
+	for i = 1, Config.Bases.Slots do
+		if not used[i] then
+			return i
+		end
 	end
-	return State.get(player).totalEarned >= cost
+	return nil
 end
 
--- Perform the rebirth: money and owned characters reset, rebirths +1.
--- Returns the list of owned uids that must be cleared from the base.
-function State.rebirth(player)
-	local s = State.get(player)
-	if not State.canRebirth(player) then
-		return nil
-	end
-	local uids = {}
-	for uid in pairs(s.owned) do
-		table.insert(uids, uid)
-	end
-	s.owned = {}
-	s.money = Config.START_MONEY
-	s.rebirths += 1
-	return uids
+function State.IsBaseLocked(state)
+	return os.clock() < state.LockUntil
 end
 
--- Base lock.
-function State.isLocked(player, now)
-	return State.get(player).lockedUntil > now
+function State.CanLock(state)
+	return os.clock() >= state.LockCooldownUntil
 end
 
-function State.lockRemaining(player, now)
-	return math.max(0, State.get(player).lockedUntil - now)
+function State.LockBase(state)
+	state.LockUntil = os.clock() + Config.LockDuration
+	state.LockCooldownUntil = os.clock() + Config.LockCooldown
 end
 
-function State.lockCooldownRemaining(player, now)
-	return math.max(0, State.get(player).lockReadyAt - now)
+function State.CanSteal(state)
+	return os.clock() >= state.StealCooldownUntil
 end
 
--- Lock the player's base. Returns true when the lock started.
-function State.lockBase(player, now)
-	local s = State.get(player)
-	if s.lockReadyAt > now then
-		return false
-	end
-	s.lockedUntil = now + Config.LOCK_DURATION
-	s.lockReadyAt = now + Config.LOCK_DURATION + Config.LOCK_COOLDOWN
-	return true
+function State.MarkSteal(state)
+	state.StealCooldownUntil = os.clock() + Config.StealCooldown
 end
 
--- Steal cooldown.
-function State.canSteal(player, now)
-	return State.get(player).lastStealAt + Config.STEAL_COOLDOWN <= now
-end
-
-function State.markSteal(player, now)
-	State.get(player).lastStealAt = now
-end
-
-function State.stealCooldownRemaining(player, now)
-	local s = State.get(player)
-	return math.max(0, s.lastStealAt + Config.STEAL_COOLDOWN - now)
+-- Lightweight snapshot sent to the client for the HUD.
+function State.Snapshot(state)
+	local nextThreshold = State.NextRebirthThreshold(state)
+	return {
+		Money = state.Money,
+		TotalEarned = state.TotalEarned,
+		Rebirths = state.Rebirths,
+		Multiplier = State.IncomeMultiplier(state),
+		NextRebirth = nextThreshold,
+		OwnedCount = #state.Owned,
+		BaseIndex = state.BaseIndex,
+		StealReadyIn = math.max(0, state.StealCooldownUntil - os.clock()),
+		LockActiveIn = math.max(0, state.LockUntil - os.clock()),
+		LockReadyIn = math.max(0, state.LockCooldownUntil - os.clock()),
+	}
 end
 
 return State

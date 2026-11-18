@@ -1,124 +1,117 @@
--- Brainrot Buffet: server entrypoint.
--- Creates the remotes, builds the world, assigns a base to each joining
--- player, and runs the loops: money ticking, the conveyor, the Hunger Wave.
--- Every rule lives in the modules; this file only wires them together.
+-- Brainrot Buffet: server entry point.
+-- Builds the world, creates the RemoteEvents, assigns bases, teleports players
+-- to their base, and runs the Heartbeat loop (income, spawner, Hunger Wave).
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
-local Shared = ReplicatedStorage:WaitForChild("Shared")
-local Config = require(Shared:WaitForChild("Config"))
-local Util = require(Shared:WaitForChild("Util"))
+local Config = require(ReplicatedStorage.Shared.Config)
+local Interact = require(script.Parent.Interact)
+local Spawner = require(script.Parent.Spawner)
+local State = require(script.Parent.State)
+local Wave = require(script.Parent.Wave)
+local World = require(script.Parent.World)
 
-local World = require(script:WaitForChild("World"))
-local State = require(script:WaitForChild("State"))
-local Characters = require(script:WaitForChild("Characters"))
-local Spawner = require(script:WaitForChild("Spawner"))
-local Shop = require(script:WaitForChild("Shop"))
-local Steal = require(script:WaitForChild("Steal"))
-local Interact = require(script:WaitForChild("Interact"))
-local Wave = require(script:WaitForChild("Wave"))
+print("[Brainrot Buffet] Server starting...")
 
--- Remotes, created once in ReplicatedStorage.
-local remotesFolder = Instance.new("Folder")
-remotesFolder.Name = "Remotes"
-remotesFolder.Parent = ReplicatedStorage
+-- Build the world.
+World.Build()
+print("[Brainrot Buffet] World built with " .. #World.Bases .. " bases.")
 
+-- RemoteEvents.
 local function makeRemote(name)
-	local r = Instance.new("RemoteEvent")
-	r.Name = name
-	r.Parent = remotesFolder
-	return r
+	local remote = Instance.new("RemoteEvent")
+	remote.Name = name
+	remote.Parent = ReplicatedStorage
+	return remote
 end
 
 local remotes = {
-	Notify = makeRemote("Notify"),
 	StateUpdate = makeRemote("StateUpdate"),
-	WaveEvent = makeRemote("WaveEvent"),
-	LockBase = makeRemote("LockBase"),
-	Rebirth = makeRemote("Rebirth"),
+	Notify = makeRemote("Notify"),
+	Buy = makeRemote("Buy"),
+	Steal = makeRemote("Steal"),
+	Lock = makeRemote("Lock"),
 }
 
--- Build the world first: everything else needs its references.
-local world = World.build()
-Shop.init(world, remotes)
-Steal.init(world, remotes)
-Interact.init(remotes)
-Wave.init(world, remotes)
-
--- Assign the next free base to a player, or nil when all are taken.
-local function assignBase(player)
-	for _, base in ipairs(world.bases) do
-		if base.owner == nil then
-			base.owner = player
-			base.signText.Text = player.Name .. "'s Base"
-			State.setBase(player, base)
-			return base
-		end
-	end
-	return nil
+local function notifyAll(message, kind)
+	remotes.Notify:FireAllClients(message, kind or "info")
 end
 
--- Free a base and remove its owner's characters from the world.
-local function releaseBase(player)
-	local base = State.getBase(player)
-	if not base then
+local function notifyPlayer(player, message, kind)
+	remotes.Notify:FireClient(player, message, kind or "info")
+end
+
+Wave.NotifyAll = notifyAll
+Wave.NotifyPlayer = notifyPlayer
+
+-- Wire clicks and remote handlers.
+Interact.Setup(remotes)
+
+-- Next free base index (round-robin over the 8 bases).
+local nextBase = 1
+local function assignBase(player)
+	local state = State.Get(player)
+	if not state then
 		return
 	end
-	base.owner = nil
-	base.signText.Text = "Empty Base"
-	for _, slot in ipairs(base.slots) do
-		if slot.taken and slot.charUid then
-			Characters.remove(slot.charUid)
-		end
-		slot.taken = false
-		slot.charUid = nil
+	state.BaseIndex = nextBase
+	local base = World.Bases[nextBase]
+	base.Owner = player
+	nextBase = (nextBase % Config.Bases.Count) + 1
+	notifyPlayer(player, "Welcome to Brainrot Buffet! Your base is Base " .. state.BaseIndex .. ".", "info")
+end
+
+local function teleportToBase(player)
+	local state = State.Get(player)
+	if not state or state.BaseIndex == 0 then
+		return
+	end
+	local character = player.Character
+	if not character then
+		return
+	end
+	local root = character:WaitForChild("HumanoidRootPart", 10)
+	if root then
+		local base = World.Bases[state.BaseIndex]
+		root.CFrame = CFrame.new(base.SpawnPos)
 	end
 end
 
--- Send one player's state to their client.
-local function pushState(player)
-	local s = State.get(player)
-	local now = os.time()
-	remotes.StateUpdate:FireClient(player, {
-		money = s.money,
-		income = State.incomePerSecond(player),
-		totalEarned = s.totalEarned,
-		rebirths = s.rebirths,
-		multiplier = State.multiplier(player),
-		owned = State.ownedCount(player),
-		slots = Config.BASE_SLOTS,
-		nextRebirth = State.nextRebirthCost(player),
-		canRebirth = State.canRebirth(player),
-		lockRemaining = State.lockRemaining(player, now),
-		lockCooldown = State.lockCooldownRemaining(player, now),
-	})
+local function onCharacterAdded(player, _character)
+	task.wait(0.2)
+	teleportToBase(player)
 end
 
 local function onPlayerAdded(player)
-	State.get(player)
-	local base = assignBase(player)
-	if base then
-		remotes.Notify:FireClient(player, "Welcome to " .. Config.GAME_NAME .. "! This is your base. Click a character on the conveyor to buy it.")
-	else
-		remotes.Notify:FireClient(player, "Welcome to " .. Config.GAME_NAME .. "! All bases are taken right now, but you can still watch the buffet.")
-	end
-	player.CharacterAdded:Connect(function(char)
-		task.wait(0.2)
-		local b = State.getBase(player)
-		if b then
-			local root = char:FindFirstChild("HumanoidRootPart")
-			if root then
-				root.CFrame = CFrame.new(b.spawnPos)
-			end
-		end
+	State.New(player)
+	assignBase(player)
+
+	player.CharacterAdded:Connect(function(character)
+		onCharacterAdded(player, character)
 	end)
+
+	-- Clean up owned character models when the player leaves.
+	player.AncestryChanged:Connect(function() end)
 end
 
 local function onPlayerRemoving(player)
-	releaseBase(player)
-	State.remove(player)
+	local state = State.Get(player)
+	if state then
+		for _, owned in ipairs(state.Owned) do
+			if owned.Model then
+				owned.Model:Destroy()
+			end
+		end
+		if state.BaseIndex > 0 then
+			local base = World.Bases[state.BaseIndex]
+			if base and base.Owner == player then
+				base.Owner = nil
+			end
+		end
+	end
+	State.Remove(player)
 end
 
 Players.PlayerAdded:Connect(onPlayerAdded)
@@ -127,56 +120,44 @@ for _, player in ipairs(Players:GetPlayers()) do
 	onPlayerAdded(player)
 end
 
--- Lock button.
-remotes.LockBase.OnServerEvent:Connect(function(player)
-	local now = os.time()
-	Steal.lockBase(player, now)
-	pushState(player)
-end)
+-- Heartbeat loop: income tick, conveyor spawner, Hunger Wave, state pushes.
+local lastIncome = os.clock()
+local lastPush = os.clock()
+Wave.Start(os.clock())
 
--- Rebirth button.
-remotes.Rebirth.OnServerEvent:Connect(function(player)
-	if not State.canRebirth(player) then
-		remotes.Notify:FireClient(player, "Not enough total earnings to rebirth yet!")
-		return
-	end
-	-- Clear the player's characters off their base first.
-	local base = State.getBase(player)
-	local uids = State.rebirth(player)
-	if uids == nil then
-		return
-	end
-	if base then
-		for _, uid in ipairs(uids) do
-			local rec = Characters.get(uid)
-			if rec and rec.slot then
-				Characters.freeSlot(base, rec.slot)
-			end
-			Characters.remove(uid)
-		end
-	end
-	remotes.Notify:FireClient(player, "REBIRTH! Your earnings are now x" .. tostring(State.multiplier(player)) .. " forever.")
-	pushState(player)
-end)
-
--- Main loop: money tick every second, conveyor and wave every frame.
-local moneyTimer = 0
 RunService.Heartbeat:Connect(function(dt)
-	-- Money tick.
-	moneyTimer += dt
-	if moneyTimer >= 1 then
-		moneyTimer = 0
+	local now = os.clock()
+
+	-- Income every second (accumulated by dt so it is frame-rate independent).
+	if now - lastIncome >= 1 then
+		local tickDt = now - lastIncome
+		lastIncome = now
 		for _, player in ipairs(Players:GetPlayers()) do
-			local income = State.incomePerSecond(player)
-			if income > 0 then
-				State.earn(player, income)
+			local state = State.Get(player)
+			if state then
+				State.AddIncome(state, tickDt)
+				if State.CheckRebirth(state) then
+					notifyPlayer(player, "REBIRTH! Your income multiplier is now x" .. State.IncomeMultiplier(state) .. "!", "success")
+				end
 			end
-			pushState(player)
 		end
 	end
-	-- Conveyor and wave.
-	Spawner.step(world, dt)
-	Wave.step(dt)
+
+	Spawner.Step(dt, now)
+	Wave.Step(now)
+
+	-- Push HUD state twice a second.
+	if now - lastPush >= 0.5 then
+		lastPush = now
+		for _, player in ipairs(Players:GetPlayers()) do
+			local state = State.Get(player)
+			if state then
+				local snapshot = State.Snapshot(state)
+				snapshot.WaveIn = Wave.TimeUntilNext(now)
+				remotes.StateUpdate:FireClient(player, snapshot)
+			end
+		end
+	end
 end)
 
-print(Config.GAME_NAME .. " server ready: " .. tostring(#world.bases) .. " bases, conveyor " .. tostring(Config.CONVEYOR_LENGTH) .. " studs.")
+print("[Brainrot Buffet] Server ready.")

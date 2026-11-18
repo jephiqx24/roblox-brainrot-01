@@ -1,49 +1,93 @@
--- Brainrot Buffet: clicking a character in the 3D world.
--- One ClickDetector per character. A click on a conveyor character is a buy;
--- a click on someone else's base character is a steal; a click on your own
--- shows its info. The server decides everything.
+-- Brainrot Buffet: click + remote handling.
+-- Wires ClickDetectors on conveyor and owned characters, and the Buy / Steal /
+-- Lock RemoteEvents the client fires. Results go back through the Notify remote.
 
-local Characters = require(script.Parent:WaitForChild("Characters"))
-local Shop = require(script.Parent:WaitForChild("Shop"))
-local Steal = require(script.Parent:WaitForChild("Steal"))
+local Shop = require(script.Parent.Shop)
+local Spawner = require(script.Parent.Spawner)
+local Steal = require(script.Parent.Steal)
 
 local Interact = {}
 
-local remotes = nil
+local Remotes = nil
 
-function Interact.init(remotesRef)
-	remotes = remotesRef
-end
-
-local function notify(player, msg)
-	if remotes and remotes.Notify then
-		remotes.Notify:FireClient(player, msg)
+local function notifyPlayer(player, message, kind)
+	if Remotes and Remotes.Notify then
+		Remotes.Notify:FireClient(player, message, kind or "info")
 	end
 end
 
--- Wire a character's ClickDetector to the buy/steal dispatch.
-function Interact.bindCharacter(record)
-	local model = record.model
-	local click = model:FindFirstChild("BuyClick")
-	if not click then
+local function wireClick(model, charId, isOwned)
+	local body = model.PrimaryPart
+	if not body then
 		return
 	end
-	click.MouseClick:Connect(function(player)
-		local now = os.time()
-		if record.onConveyor then
-			local ok, msg = Shop.tryBuy(player, record.uid)
-			if not ok then
-				notify(player, msg)
+	local old = body:FindFirstChildOfClass("ClickDetector")
+	if old then
+		old:Destroy()
+	end
+	local detector = Instance.new("ClickDetector")
+	detector.MaxActivationDistance = 60
+	detector.Parent = body
+	if isOwned then
+		detector.MouseClick:Connect(function(player)
+			local ok, msg = Steal.TrySteal(player, charId)
+			notifyPlayer(player, msg, ok and "success" or "error")
+		end)
+	else
+		detector.MouseClick:Connect(function(player)
+			local ok, msg = Shop.Buy(player, charId)
+			notifyPlayer(player, msg, ok and "success" or "error")
+		end)
+	end
+end
+
+function Interact.Setup(remotes)
+	Remotes = remotes
+
+	-- Every conveyor spawn gets a buy ClickDetector.
+	Spawner.OnSpawn = function(entry)
+		wireClick(entry.Model, entry.Id, false)
+	end
+	-- Wire spawns that already exist (none at startup, but be safe).
+	for _, entry in ipairs(Spawner.Alive) do
+		wireClick(entry.Model, entry.Id, false)
+	end
+
+	-- A bought character becomes stealable.
+	Shop.OnBought = function(_player, owned, _base)
+		wireClick(owned.Model, owned.Id, true)
+	end
+
+	-- A stolen character stays stealable (by someone else next time).
+	Steal.OnStolen = function(_thief, _victim, owned, _base)
+		wireClick(owned.Model, owned.Id, true)
+	end
+
+	-- RemoteEvents from the client (HUD buttons / future click paths).
+	if remotes.Buy then
+		remotes.Buy.OnServerEvent:Connect(function(player, charId)
+			if typeof(charId) ~= "number" then
+				return
 			end
-		elseif record.owner == player then
-			notify(player, record.def.name .. " (" .. record.def.rarity .. ") earns $" .. tostring(record.rate) .. "/s. " .. record.def.desc)
-		else
-			local ok, msg = Steal.trySteal(player, record.uid, now)
-			if not ok then
-				notify(player, msg)
+			local ok, msg = Shop.Buy(player, charId)
+			notifyPlayer(player, msg, ok and "success" or "error")
+		end)
+	end
+	if remotes.Steal then
+		remotes.Steal.OnServerEvent:Connect(function(player, charId)
+			if typeof(charId) ~= "number" then
+				return
 			end
-		end
-	end)
+			local ok, msg = Steal.TrySteal(player, charId)
+			notifyPlayer(player, msg, ok and "success" or "error")
+		end)
+	end
+	if remotes.Lock then
+		remotes.Lock.OnServerEvent:Connect(function(player)
+			local ok, msg = Steal.LockBase(player)
+			notifyPlayer(player, msg, ok and "success" or "error")
+		end)
+	end
 end
 
 return Interact

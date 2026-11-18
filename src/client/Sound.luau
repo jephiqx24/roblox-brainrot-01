@@ -1,54 +1,38 @@
--- Brainrot Buffet: client sounds.
--- Only Roblox's built-in sounds (rbxasset://), so nothing needs an asset
--- upload and nothing can be restricted. Mute gates every play.
+-- Brainrot Buffet: sounds.
+-- Built-in rbxasset:// sounds only, no external assets.
+
+local SoundService = game:GetService("SoundService")
 
 local Sound = {}
 
-local muted = false
-local sounds = {}
+-- Built-in Roblox sound assets.
+local Sounds = {
+	buy = "rbxasset://sounds/electronicpingshort.wav",
+	error = "rbxasset://sounds/impact_water.mp3",
+	wave = "rbxasset://sounds/breaking-news.mp3",
+	steal = "rbxasset://sounds/electronicpingshort.wav",
+	rebirth = "rbxasset://sounds/impact_water.mp3",
+}
 
-local function getSound(name, asset)
-	local s = sounds[name]
-	if s then
-		return s
-	end
-	s = Instance.new("Sound")
-	s.Name = name
-	s.SoundId = asset
-	s.Volume = 0.5
-	s.Parent = game:GetService("SoundService")
-	sounds[name] = s
-	return s
-end
-
-function Sound.play(name)
-	if muted then
+function Sound.Play(name)
+	local asset = Sounds[name]
+	if not asset then
 		return
 	end
-	local asset = nil
-	if name == "buy" then
-		asset = "rbxasset://sounds/electronicpingshort.wav"
-	elseif name == "click" then
-		asset = "rbxasset://sounds/button.wav"
-	elseif name == "wave" then
-		asset = "rbxasset://sounds/impact_water.mp3"
-	elseif name == "rebirth" then
-		asset = "rbxasset://sounds/electronicpingshort.wav"
-	end
-	if asset == nil then
-		return
-	end
-	local s = getSound(name, asset)
-	s:Play()
-end
-
-function Sound.toggleMute()
-	muted = not muted
-	return muted
-end
-
-function Sound.isMuted()
-	return muted
+	local sound = Instance.new("Sound")
+	sound.SoundId = asset
+	sound.Volume = 0.5
+	sound.Parent = SoundService
+	sound:Play()
+	sound.Ended:Connect(function()
+		sound:Destroy()
+	end)
+	-- Safety net: remove it even if Ended never fires.
+	task.delay(5, function()
+		if sound.Parent then
+			sound:Destroy()
+		end
+	end)
 end
 
 return Sound

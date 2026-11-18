@@ -1,93 +1,101 @@
--- Brainrot Buffet: stealing characters and locking your base.
--- A player can steal a character off another player's base by clicking it,
--- unless that base is locked or the thief is on cooldown. Locking your base
--- stops every steal for a minute. All checks run on the server.
+-- Brainrot Buffet: stealing rivals' characters and locking your base.
+-- Steal has a 30s cooldown per player. A base lock lasts 60s with a 120s
+-- cooldown and blocks all steals from that base while active.
 
-local Config = require(game:GetService("ReplicatedStorage"):WaitForChild("Shared"):WaitForChild("Config"))
-local Characters = require(script.Parent:WaitForChild("Characters"))
-local State = require(script.Parent:WaitForChild("State"))
+local Config = require(game:GetService("ReplicatedStorage").Shared.Config)
+local Characters = require(script.Parent.Characters)
+local State = require(script.Parent.State)
+local World = require(script.Parent.World)
 
 local Steal = {}
 
-local world = nil
-local remotes = nil
+Steal.OnStolen = nil -- optional callback(thief, victim, owned, base)
 
-function Steal.init(worldRef, remotesRef)
-	world = worldRef
-	remotes = remotesRef
-end
-
-local function freeSlot(base)
-	for i, slot in ipairs(base.slots) do
-		if not slot.taken then
-			return i
+-- Finds an owned character entry by model CharId across all players.
+local function findOwned(charId)
+	for _, state in pairs(State.Players) do
+		for _, owned in ipairs(state.Owned) do
+			if owned.Id == charId then
+				return owned, state
+			end
 		end
 	end
-	return nil
+	return nil, nil
 end
 
-local function notify(player, msg)
-	if remotes and remotes.Notify then
-		remotes.Notify:FireClient(player, msg)
+-- Attempts a steal. Returns (success, message).
+function Steal.TrySteal(thief, charId)
+	local thiefState = State.Get(thief)
+	if not thiefState then
+		return false, "No player state."
 	end
-end
-
--- Attempt to steal the character with this uid for this player.
-function Steal.trySteal(player, uid, now)
-	local rec = Characters.get(uid)
-	if not rec then
-		return false, "That character is gone."
-	end
-	if rec.onConveyor then
-		return false, "That character is on the conveyor, not a base."
-	end
-	local owner = rec.owner
-	if not owner then
-		return false, "That character has no owner."
-	end
-	if owner == player then
-		return false, "That is your own " .. rec.def.name .. "."
-	end
-	if State.isLocked(owner, now) then
-		return false, owner.Name .. "'s base is locked!"
-	end
-	if not State.canSteal(player, now) then
-		return false, "Steal is on cooldown (" .. tostring(State.stealCooldownRemaining(player, now)) .. "s)."
-	end
-	local myBase = State.getBase(player)
-	if not myBase then
+	if thiefState.BaseIndex == 0 then
 		return false, "You have no base yet."
 	end
-	local slot = freeSlot(myBase)
+
+	local owned, victimState = findOwned(charId)
+	if not owned then
+		return false, "That character is gone."
+	end
+	if victimState.Player == thief then
+		return false, "That one is already yours!"
+	end
+
+	if State.IsBaseLocked(victimState) then
+		return false, victimState.Player.Name .. "'s base is locked!"
+	end
+
+	if not State.CanSteal(thiefState) then
+		local wait = math.ceil(thiefState.StealCooldownUntil - os.clock())
+		return false, "Steal cooldown: wait " .. wait .. "s."
+	end
+
+	local slot = State.FreeSlot(thiefState)
 	if not slot then
-		return false, "Your base is full! Sell or rebirth to make room."
+		return false, "Your base is full!"
 	end
-	-- Move it: free the old slot, take it off the old owner's books, put it
-	-- on the thief's base with the thief's multiplier.
-	local oldBase = State.getBase(owner)
-	local oldSlot = rec.slot
-	if oldBase and oldSlot then
-		Characters.freeSlot(oldBase, oldSlot)
+
+	State.MarkSteal(thiefState)
+
+	-- Remove from the victim.
+	for i, o in ipairs(victimState.Owned) do
+		if o == owned then
+			table.remove(victimState.Owned, i)
+			break
+		end
 	end
-	State.removeOwned(owner, uid)
-	State.markSteal(player, now)
-	local rate = Config.rateFor(rec.def, rec.mutation.name, State.multiplier(player))
-	rec.rate = rate
-	Characters.placeOnBase(rec, myBase, slot, player)
-	State.addOwned(player, uid, rec.def.id, rec.mutation.name, rate, slot)
-	notify(player, "You stole " .. rec.def.name .. " from " .. owner.Name .. "!")
-	notify(owner, player.Name .. " stole your " .. rec.def.name .. "! Lock your base!")
-	return true, "Stole " .. rec.def.name .. "!"
+
+	-- Move to the thief's base.
+	owned.Owner = thief
+	owned.Slot = slot
+	table.insert(thiefState.Owned, owned)
+	local base = World.Bases[thiefState.BaseIndex]
+	Characters.PlaceModel(owned.Model, base.Slots[slot])
+	owned.Model:SetAttribute("OwnedBy", thief.Name)
+	owned.Model:SetAttribute("Slot", slot)
+
+	if Steal.OnStolen then
+		Steal.OnStolen(thief, victimState.Player, owned, base)
+	end
+
+	return true, "You stole " .. owned.Def.Name .. " from " .. victimState.Player.Name .. "!"
 end
 
--- Lock the player's base. Returns true when the lock started.
-function Steal.lockBase(player, now)
-	if State.lockBase(player, now) then
-		notify(player, "Base locked for " .. tostring(Config.LOCK_DURATION) .. "s! No one can steal from you.")
-		return true
+-- Attempts to lock the caller's base. Returns (success, message).
+function Steal.LockBase(player)
+	local state = State.Get(player)
+	if not state then
+		return false, "No player state."
 	end
-	notify(player, "Lock is on cooldown (" .. tostring(State.lockCooldownRemaining(player, now)) .. "s left).")
-	return false
+	if State.IsBaseLocked(state) then
+		return false, "Your base is already locked!"
+	end
+	if not State.CanLock(state) then
+		local wait = math.ceil(state.LockCooldownUntil - os.clock())
+		return false, "Lock cooldown: wait " .. wait .. "s."
+	end
+	State.LockBase(state)
+	return true, "Base locked for " .. Config.LockDuration .. "s!"
 end
 
 return Steal
