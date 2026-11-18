@@ -1,6 +1,10 @@
 # Brainrot Buffet (The Great Picnic)
 
-A food-themed brainrot game for the make.fun roblox-brainrot-01 competition.
+[![make.fun · roblox-brainrot-01](https://make.fun/badge/roblox-brainrot-01.svg)](https://make.fun/bounty/roblox-brainrot-01?utm_source=github&utm_medium=readme&utm_campaign=roblox-brainrot-01)
+[![rank](https://make.fun/badge/roblox-brainrot-01/jephiqx24/roblox-brainrot-01/rank.svg)](https://make.fun/bounty/roblox-brainrot-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=roblox-brainrot-01)
+[![reward](https://make.fun/badge/roblox-brainrot-01/jephiqx24/roblox-brainrot-01/reward.svg)](https://make.fun/bounty/roblox-brainrot-01?utm_source=github&utm_medium=readme&utm_campaign=roblox-brainrot-01)
+
+A food-themed brainrot game for the [make.fun roblox-brainrot-01 bounty](https://make.fun/bounty/roblox-brainrot-01).
 
 Twelve original food-animal characters — Pasta Penguin, Taco Turtle, Pizza
 Pigeon, Burger Beaver, Sushi Shark, Donut Duck, Ramen Rhino, Croissant
