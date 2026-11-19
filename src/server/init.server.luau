@@ -7,11 +7,11 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local Config = require(ReplicatedStorage.Shared.Config)
-local Interact = require(script.Parent.Interact)
-local Spawner = require(script.Parent.Spawner)
-local State = require(script.Parent.State)
-local Wave = require(script.Parent.Wave)
-local World = require(script.Parent.World)
+local Interact = require(script.Interact)
+local Spawner = require(script.Spawner)
+local State = require(script.State)
+local Wave = require(script.Wave)
+local World = require(script.World)
 
 print("[Brainrot Buffet] Server starting...")
 
