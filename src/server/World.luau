@@ -106,6 +106,20 @@ function World.Build()
 	-- Central plaza: a big tan slab.
 	makePart(folder, "Plaza", Vector3.new(150, 1, 90), Vector3.new(0, 0.5, 0), Color3.fromRGB(210, 180, 140), Enum.Material.Sand, true)
 
+	-- SpawnLocation on the plaza so players always spawn on top, not under it.
+	local spawn = Instance.new("SpawnLocation")
+	spawn.Name = "SpawnLocation"
+	spawn.Size = Vector3.new(8, 1, 8)
+	spawn.Position = Vector3.new(0, 1.5, 20)
+	spawn.Color = Color3.fromRGB(80, 220, 100)
+	spawn.Material = Enum.Material.SmoothPlastic
+	spawn.Anchored = true
+	spawn.CanCollide = true
+	spawn.Neutral = true
+	spawn.AllowTeamChangeOnTouch = false
+	spawn.Duration = 0
+	spawn.Parent = folder
+
 	-- Conveyor belt along X at z = 0.
 	local belt = makePart(folder, "Conveyor", Vector3.new(Config.Conveyor.Length, 1, 10), Vector3.new(0, 1, Config.Conveyor.Z), Color3.fromRGB(45, 45, 55), Enum.Material.SmoothPlastic, true)
 	World.Conveyor = belt
